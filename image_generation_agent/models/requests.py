@@ -25,16 +25,16 @@ MAX_NUMBER_OF_IMAGES = 4
 class ImageGenerationRequest(BaseModel):
     """Validated internal request after orchestration."""
 
-    prompt: str = Field(..., min_length=1, description="Verbatim user creative intent.")
+    user_prompt: str = Field(..., min_length=1, description="Verbatim user creative intent.")
     reference_images: list[str] = Field(default_factory=list)
     resolution: Resolution = Resolution.K1
     workflow: Workflow = Workflow.TEXT_TO_IMAGE
     number_of_images: int = Field(default=1, ge=1, le=MAX_NUMBER_OF_IMAGES)
 
-    @field_validator("prompt")
+    @field_validator("user_prompt")
     @classmethod
-    def strip_prompt(cls, value: str) -> str:
+    def strip_user_prompt(cls, value: str) -> str:
         stripped = value.strip()
         if not stripped:
-            raise ValueError("prompt must not be empty")
+            raise ValueError("user_prompt must not be empty")
         return stripped

@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import mimetypes
-import time
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
@@ -96,17 +95,6 @@ class S3StorageService:
                     Body=b"",
                     ContentType="application/octet-stream",
                 )
-                logger.info(
-                    "Created S3 folder s3://%s/%s/",
-                    self._bucket,
-                    self._key_prefix,
-                )
-            else:
-                logger.info(
-                    "S3 folder already exists s3://%s/%s/",
-                    self._bucket,
-                    self._key_prefix,
-                )
 
         try:
             await asyncio.to_thread(_ensure)
@@ -134,18 +122,6 @@ class S3StorageService:
 
         ext = self._extension_for_mime(mime_type)
         key = f"{self._key_prefix}/{request_id}{ext}"
-        size_bytes = len(image_bytes)
-
-        logger.info(
-            "[S3 Upload] Uploading to bucket=%s key=%s request_id=%s size_bytes=%s mime_type=%s",
-            self._bucket,
-            key,
-            request_id,
-            size_bytes,
-            mime_type,
-        )
-
-        started_at = time.perf_counter()
 
         def _upload() -> None:
             self.client.put_object(
@@ -158,21 +134,7 @@ class S3StorageService:
         try:
             await asyncio.to_thread(_upload)
         except (ClientError, BotoCoreError) as exc:
-            logger.exception(
-                "[S3 Upload] Failed request_id=%s key=%s bucket=%s",
-                request_id,
-                key,
-                self._bucket,
-            )
+            logger.exception("S3 upload failed request_id=%s key=%s", request_id, key)
             raise RuntimeError(f"S3 upload failed: {exc}") from exc
 
-        elapsed_ms = (time.perf_counter() - started_at) * 1000
-        url = self._build_object_url(key)
-        logger.info(
-            "[S3 Upload] Success request_id=%s key=%s url=%s duration_ms=%.0f",
-            request_id,
-            key,
-            url,
-            elapsed_ms,
-        )
-        return url
+        return self._build_object_url(key)

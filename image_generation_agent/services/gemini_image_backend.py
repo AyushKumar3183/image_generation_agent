@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import time
 
 from google import genai
 from google.genai import types
@@ -32,8 +31,9 @@ class GeminiImageBackend:
         request: ImageGenerationRequest,
         *,
         request_id: str,
+        prompt: str,
     ) -> dict:
-        contents: list[types.Part] = [types.Part.from_text(text=request.prompt)]
+        contents: list[types.Part] = [types.Part.from_text(text=prompt)]
 
         for url in request.reference_images:
             contents.append(types.Part.from_uri(file_uri=url))
@@ -45,16 +45,6 @@ class GeminiImageBackend:
             ),
         )
 
-        started_at = time.perf_counter()
-        logger.info(
-            "[Image Generation] Calling Gemini request_id=%s model=%s workflow=%s resolution=%s refs=%s",
-            request_id,
-            self._model,
-            request.workflow.value,
-            request.resolution.value,
-            len(request.reference_images),
-        )
-
         try:
             response = await self.client.aio.models.generate_content(
                 model=self._model,
@@ -63,7 +53,7 @@ class GeminiImageBackend:
             )
         except Exception as exc:
             logger.exception(
-                "[Image Generation] Gemini API error request_id=%s model=%s workflow=%s",
+                "Gemini API error request_id=%s model=%s workflow=%s",
                 request_id,
                 self._model,
                 request.workflow.value,
@@ -75,30 +65,18 @@ class GeminiImageBackend:
                 "retryable": True,
             }
 
-        elapsed_ms = (time.perf_counter() - started_at) * 1000
-
         for part in response.parts or []:
             if part.inline_data and part.inline_data.data:
-                mime_type = part.inline_data.mime_type or "image/png"
-                logger.info(
-                    "[Image Generation] Gemini success request_id=%s model=%s size_bytes=%s mime_type=%s duration_ms=%.0f",
-                    request_id,
-                    self._model,
-                    len(part.inline_data.data),
-                    mime_type,
-                    elapsed_ms,
-                )
                 return {
                     "status": "success",
                     "image_bytes": part.inline_data.data,
-                    "mime_type": mime_type,
+                    "mime_type": part.inline_data.mime_type or "image/png",
                 }
 
         logger.warning(
-            "[Image Generation] Gemini returned no image request_id=%s model=%s duration_ms=%.0f",
+            "Gemini returned no image request_id=%s model=%s",
             request_id,
             self._model,
-            elapsed_ms,
         )
 
         return {

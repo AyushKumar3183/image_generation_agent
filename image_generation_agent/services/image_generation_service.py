@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 import uuid
 
 from google.adk.tools.tool_context import ToolContext
@@ -96,7 +95,7 @@ class ImageGenerationService:
         workflow = detect_workflow(len(refs))
 
         return ImageGenerationRequest(
-            prompt=build_generation_prompt(prompt),
+            user_prompt=prompt.strip(),
             reference_images=refs,
             resolution=normalize_resolution(resolution),
             workflow=workflow,
@@ -110,21 +109,13 @@ class ImageGenerationService:
         tool_context: ToolContext | None = None,
     ) -> ImageGenerationResponse:
         request_id = str(uuid.uuid4())
-        started_at = time.perf_counter()
-
-        logger.info(
-            "[Image Generation] Starting batch request_id=%s workflow=%s refs=%s resolution=%s count=%s",
-            request_id,
-            request.workflow.value,
-            len(request.reference_images),
-            request.resolution.value,
-            request.number_of_images,
-        )
 
         tasks = [
             self._generate_and_upload_single(
                 request=request,
                 request_id=f"{request_id}-{index + 1}",
+                image_index=index + 1,
+                total_images=request.number_of_images,
                 save_artifact=tool_context is not None and index == 0,
                 tool_context=tool_context,
             )
@@ -158,15 +149,6 @@ class ImageGenerationService:
             if item_artifact:
                 artifact_name = item_artifact
 
-        elapsed_ms = (time.perf_counter() - started_at) * 1000
-        logger.info(
-            "[Image Generation] Batch completed request_id=%s count=%s duration_ms=%.0f urls=%s",
-            request_id,
-            len(image_urls),
-            elapsed_ms,
-            image_urls,
-        )
-
         return ImageGenerationResponse(
             result=ImageGenerationSuccess(
                 image_urls=image_urls,
@@ -186,19 +168,18 @@ class ImageGenerationService:
         *,
         request: ImageGenerationRequest,
         request_id: str,
+        image_index: int,
+        total_images: int,
         save_artifact: bool,
         tool_context: ToolContext | None,
     ) -> tuple[str, str, str | None]:
-        started_at = time.perf_counter()
-        logger.info(
-            "[Image Generation] Starting single image request_id=%s workflow=%s resolution=%s",
-            request_id,
-            request.workflow.value,
-            request.resolution.value,
-        )
-
         async def _call_backend() -> dict:
-            return await self._invoke_backend(request, request_id=request_id)
+            return await self._invoke_backend(
+                request,
+                request_id=request_id,
+                image_index=image_index,
+                total_images=total_images,
+            )
 
         backend_result = await with_retry(
             _call_backend,
@@ -208,7 +189,7 @@ class ImageGenerationService:
 
         if backend_result.get("status") != "success":
             logger.error(
-                "[Image Generation] Failed request_id=%s message=%s",
+                "Image generation failed request_id=%s message=%s",
                 request_id,
                 backend_result.get("message", "Image generation failed."),
             )
@@ -219,17 +200,8 @@ class ImageGenerationService:
         image_bytes = backend_result.get("image_bytes")
         mime_type = backend_result.get("mime_type", "image/png")
         if not image_bytes:
-            logger.error("[Image Generation] No image bytes returned request_id=%s", request_id)
+            logger.error("No image bytes returned request_id=%s", request_id)
             raise RuntimeError("No image bytes returned from backend.")
-
-        generation_ms = (time.perf_counter() - started_at) * 1000
-        logger.info(
-            "[Image Generation] Gemini returned image request_id=%s size_bytes=%s mime_type=%s duration_ms=%.0f",
-            request_id,
-            len(image_bytes),
-            mime_type,
-            generation_ms,
-        )
 
         artifact_name: str | None = None
         if save_artifact and tool_context:
@@ -239,21 +211,10 @@ class ImageGenerationService:
                 types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
             )
 
-        upload_started_at = time.perf_counter()
-        logger.info("[S3 Upload] Starting upload request_id=%s size_bytes=%s", request_id, len(image_bytes))
         image_url = await self._storage.upload_image(
             image_bytes=image_bytes,
             request_id=request_id,
             mime_type=mime_type,
-        )
-        upload_ms = (time.perf_counter() - upload_started_at) * 1000
-        total_ms = (time.perf_counter() - started_at) * 1000
-        logger.info(
-            "[S3 Upload] Finished request_id=%s url=%s upload_ms=%.0f total_ms=%.0f",
-            request_id,
-            image_url,
-            upload_ms,
-            total_ms,
         )
         return image_url, mime_type, artifact_name
 
@@ -283,5 +244,16 @@ class ImageGenerationService:
         request: ImageGenerationRequest,
         *,
         request_id: str,
+        image_index: int = 1,
+        total_images: int = 1,
     ) -> dict:
-        return await self._backend.generate(request, request_id=request_id)
+        prompt = build_generation_prompt(
+            request.user_prompt,
+            image_index=image_index,
+            total_images=total_images,
+        )
+        return await self._backend.generate(
+            request,
+            request_id=request_id,
+            prompt=prompt,
+        )

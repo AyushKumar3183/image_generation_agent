@@ -7,14 +7,13 @@ import logging
 from fastapi import APIRouter, Body, Depends, status
 from fastapi.responses import JSONResponse
 
-from image_generation_agent.api.dependencies import get_image_generation_service
+from image_generation_agent.agent_runner import ImageGenerationAgentRunner
+from image_generation_agent.api.dependencies import get_agent_runner
 from image_generation_agent.api.schemas import (
     DEFAULT_REQUEST_EXAMPLE,
     GenerateImageRequest,
     HealthResponse,
 )
-from image_generation_agent.models.responses import ImageGenerationError, ImageGenerationSuccess
-from image_generation_agent.services.image_generation_service import ImageGenerationService
 
 router = APIRouter(tags=["images"])
 logger = logging.getLogger(__name__)
@@ -36,10 +35,9 @@ async def health() -> HealthResponse:
     "/v1/images/generate",
     summary="Generate an image",
     description=(
-        "Generate or modify images from a prompt. "
-        "Workflow is selected automatically from reference_images count: "
-        "0 → text-to-image, 1 → image-to-image, 2+ → multi-image generation. "
-        "Do not send generation_mode."
+        "Generate or modify images from a prompt via root_agent. "
+        "Flow: Agent → generate_image_tool → service. "
+        "Workflow is selected automatically from reference_images count."
     ),
 )
 async def generate_image(
@@ -90,43 +88,29 @@ async def generate_image(
             },
         },
     ),
-    service: ImageGenerationService = Depends(get_image_generation_service),
+    agent_runner: ImageGenerationAgentRunner = Depends(get_agent_runner),
 ) -> JSONResponse:
-    logger.info(
-        "[API] Image generation request prompt_len=%s refs=%s resolution=%s number_of_images=%s",
-        len(body.prompt),
-        len(body.reference_images),
-        body.resolution.value,
-        body.number_of_images,
-    )
-    response = await service.generate_from_params(
+    payload = await agent_runner.generate(
         prompt=body.prompt,
-        reference_images=body.reference_images or None,
+        reference_images=body.reference_images,
         resolution=body.resolution.value,
         number_of_images=body.number_of_images,
     )
 
-    payload = response.to_tool_dict()
-
-    if isinstance(response.result, ImageGenerationSuccess):
-        logger.info(
-            "[API] Image generation succeeded request_id=%s count=%s",
-            response.result.request_id,
-            response.result.number_of_images,
-        )
+    if payload.get("status") == "success":
         return JSONResponse(status_code=status.HTTP_200_OK, content=payload)
 
-    assert isinstance(response.result, ImageGenerationError)
-    error = response.result
+    error_code = payload.get("error_code", "GENERATION_FAILED")
     logger.warning(
-        "[API] Image generation failed error_code=%s request_id=%s message=%s",
-        error.error_code,
-        error.request_id,
-        error.message,
+        "Image generation failed error_code=%s request_id=%s message=%s",
+        error_code,
+        payload.get("request_id"),
+        payload.get("message"),
     )
-    if error.error_code in _CLIENT_ERROR_CODES:
+
+    if error_code in _CLIENT_ERROR_CODES:
         http_status = status.HTTP_400_BAD_REQUEST
-    elif error.retryable:
+    elif payload.get("retryable"):
         http_status = status.HTTP_503_SERVICE_UNAVAILABLE
     else:
         http_status = status.HTTP_502_BAD_GATEWAY

@@ -68,3 +68,4 @@ logs/
 *.sqlite3
 tmp/
 temp/
+.adk/
